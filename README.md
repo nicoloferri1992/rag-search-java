@@ -6,14 +6,93 @@ from Maven Central — no internal/ISP repositories required.
 
 ## Architecture
 
+The service follows a **hexagonal architecture** (ports & adapters): the domain layer
+defines *what* the system needs (persistence, embeddings, text generation) through
+plain interfaces, and never depends on Spring, JDBC, or any external HTTP client.
+Adapters implement those interfaces and are the only place that knows about
+PostgreSQL, pgvector, or the OpenAI wire format.
+
 ```
-domain/            business model + ports (ChunkRepository, EmbeddingClient, CompletionClient)
-application/        ChunkingService, IngestionService, RagOrchestrator
-adapter/persistence  JdbcChunkRepository — pgvector + tsvector, RRF fused in one SQL query
-adapter/embedding    OpenAiEmbeddingClient — OpenAI-compatible /v1/embeddings
-adapter/llm          OpenAiCompletionClient — OpenAI-compatible /v1/chat/completions
-adapter/web          IngestController, QueryController
+domain/
+  model/            DocumentChunk, RetrievedChunk, RagAnswer — immutable records
+  port/              ChunkRepository, EmbeddingClient, CompletionClient (interfaces)
+
+application/
+  ChunkingService     splits raw text into overlapping word chunks (pure logic)
+  IngestionService     orchestrates ingest: chunk -> embed -> persist
+  RagOrchestrator      orchestrates query: embed -> hybrid search -> prompt -> answer
+
+adapter/
+  persistence/JdbcChunkRepository   implements ChunkRepository — pgvector + tsvector,
+                                     dense/sparse fusion (RRF) in one SQL query
+  embedding/OpenAiEmbeddingClient   implements EmbeddingClient — calls /v1/embeddings
+  llm/OpenAiCompletionClient        implements CompletionClient — calls /v1/chat/completions
+  web/IngestController,
+      QueryController               inbound REST adapters (DTOs, validation, mapping)
+
+config/              Spring wiring: RagProperties (typed, validated config), RestClientConfig
 ```
+
+Only the `adapter` and `config` packages import framework or infrastructure code
+(Spring, JDBC, `RestClient`). `domain` and `application` are plain Java and could be
+unit-tested or reused without Spring Boot at all. Dependencies are wired through
+constructor injection everywhere — no field injection, no service locators.
+
+### How ingestion works
+
+```
+POST /api/v1/documents  { documentId, text }
+        │
+        ▼
+IngestController          validates the request, maps it to a plain (documentId, text) pair
+        │
+        ▼
+IngestionService.ingest()
+        │
+        ├─► ChunkingService.chunk()        splits text into overlapping word windows
+        │                                   (default: 250 words, 40 overlap)
+        │
+        ├─► EmbeddingClient.embedAll()     one dense vector per chunk (Ollama/OpenAI)
+        │
+        └─► ChunkRepository.saveAll()      batch INSERT: each row stores the chunk text,
+                                            its VECTOR embedding, and a generated TSVECTOR
+                                            for full-text search — both indexed
+```
+
+### How a query works
+
+```
+POST /api/v1/query  { question }
+        │
+        ▼
+QueryController            validates the request
+        │
+        ▼
+RagOrchestrator.answer()
+        │
+        ├─► EmbeddingClient.embed(question)     dense embedding of the question
+        │
+        ├─► ChunkRepository.hybridSearch()      ONE SQL query that:
+        │                                        1) ranks chunks by cosine distance
+        │                                           on the embedding (dense/semantic)
+        │                                        2) ranks chunks by ts_rank on the
+        │                                           tsvector (sparse/keyword)
+        │                                        3) fuses both rankings with
+        │                                           Reciprocal Rank Fusion (RRF):
+        │                                           score = Σ 1 / (k + rank_i)
+        │                                        4) returns the top-K fused results
+        │
+        ├─► builds a prompt: system instructions ("answer only from context")
+        │   + the retrieved chunks + the question
+        │
+        └─► CompletionClient.complete()          sends the prompt to the chat model,
+                                                   returns the grounded answer + sources
+```
+
+Hybrid search matters because dense (vector) search alone can miss exact terms —
+codes, names, acronyms — while keyword search alone misses paraphrases and synonyms.
+RRF combines both rankings without needing to normalize or tune their raw scores,
+which is what makes it a safe default over a hand-tuned weighted sum.
 
 ## Prerequisites
 
