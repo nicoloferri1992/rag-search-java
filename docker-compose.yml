@@ -1,0 +1,14 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_DB: rag_search
+      POSTGRES_USER: rag_search
+      POSTGRES_PASSWORD: rag_search
+    ports:
+      - "5432:5432"
+    volumes:
+      - rag_search_pgdata:/var/lib/postgresql/data
+
+volumes:
+  rag_search_pgdata:

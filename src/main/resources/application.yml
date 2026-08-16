@@ -1,0 +1,26 @@
+spring:
+  application:
+    name: rag-search
+  datasource:
+    url: ${DB_URL:jdbc:postgresql://localhost:5432/rag_search}
+    username: ${DB_USERNAME:rag_search}
+    password: ${DB_PASSWORD:rag_search}
+  flyway:
+    enabled: true
+    locations: classpath:db/migration
+
+rag:
+  chunking:
+    size-words: ${CHUNK_SIZE_WORDS:250}
+    overlap-words: ${CHUNK_OVERLAP_WORDS:40}
+  retrieval:
+    top-k: ${RETRIEVAL_TOP_K:5}
+    rrf-k: ${RETRIEVAL_RRF_K:60}
+  openai:
+    api-key: ${OPENAI_API_KEY:ollama}
+    base-url: ${OPENAI_BASE_URL:http://localhost:11434/v1}
+    embedding-model: ${OPENAI_EMBEDDING_MODEL:nomic-embed-text}
+    chat-model: ${OPENAI_CHAT_MODEL:llama3.2}
+
+server:
+  port: ${SERVER_PORT:8080}
